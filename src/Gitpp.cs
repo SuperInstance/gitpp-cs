@@ -222,6 +222,191 @@ namespace Gitpp
             };
         }
 
+        /// <summary>
+        /// Compute the closure root at <paramref name="at"/>. Returns (root, closure)
+        /// where root is the SHA-256 hex digest of the closure, or null if the closure
+        /// is incomplete.
+        /// </summary>
+        public static (string? root, List<string> closure) ClosureRoot(List<Record> records, string at)
+        {
+            var byId = records.Where(r => !string.IsNullOrEmpty(r.Id)).ToDictionary(r => r.Id);
+            if (!byId.ContainsKey(at)) return (null, new List<string>());
+
+            var seen = new HashSet<string>();
+            var stack = new Stack<string>();
+            stack.Push(at);
+            while (stack.Count > 0)
+            {
+                var cur = stack.Pop();
+                if (seen.Contains(cur)) continue;
+                if (!byId.ContainsKey(cur)) return (null, new List<string>());
+                seen.Add(cur);
+                foreach (var p in byId[cur].Parents)
+                {
+                    if (!seen.Contains(p)) stack.Push(p);
+                }
+            }
+
+            var sorted = seen.OrderBy(x => string.Concat(x.Select(c => ((int)c).ToString("D5")))).ToList();
+
+            var lines = new List<string>();
+            foreach (var id in sorted)
+            {
+                var leaf = RecordLeaf(byId[id]);
+                lines.Add($"{id}:{leaf}");
+            }
+
+            using var sha = SHA256.Create();
+            var bytes = sha.ComputeHash(Encoding.UTF8.GetBytes(string.Join("\n", lines)));
+            return (BitConverter.ToString(bytes).Replace("-", "").ToLowerInvariant(), sorted);
+        }
+
+        /// <summary>
+        /// Compute the leaf hash of a record. Per spec §2: SHA-256 of the canonical
+        /// JSON form of {id, parents, kind, effects, reason}.
+        /// </summary>
+        public static string RecordLeaf(Record r)
+        {
+            var parents = r.Parents.OrderBy(x => string.Concat(x.Select(c => ((int)c).ToString("D5")))).ToList();
+            var canon = new SortedDictionary<string, object?>(StringComparer.Ordinal)
+            {
+                ["effects"] = r.Effects,
+                ["id"] = r.Id,
+                ["kind"] = r.Kind,
+                ["parents"] = parents,
+                ["reason"] = r.Reason,
+            };
+            var json = CanonicalJson(canon);
+            using var sha = SHA256.Create();
+            var bytes = sha.ComputeHash(Encoding.UTF8.GetBytes(json));
+            return BitConverter.ToString(bytes).Replace("-", "").ToLowerInvariant();
+        }
+
+        /// <summary>
+        /// Serialize a value to canonical JSON per spec §2.7: 
+        /// keys sorted by ordinal, ", " and ": " separators, literal Unicode
+        /// (no \\uXXXX escape), numbers in float64 domain.
+        /// </summary>
+        public static string CanonicalJson(object? obj) => EmitValue(obj, ", ", ": ");
+
+        static string EmitValue(object? v, string sep, string kvSep)
+        {
+            if (v == null) return "null";
+            if (v is JsonElement je) return EmitJsonElement(je, sep, kvSep);
+            if (v is bool b) return b ? "true" : "false";
+            if (v is int i) return i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if (v is long l) return l.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if (v is double d) return NumFormat(d);
+            if (v is string str) return JsonStringEncode(str);
+            if (v is Dictionary<string, object?> dict)
+            {
+                var keys = dict.Keys.OrderBy(k => k, StringComparer.Ordinal).ToList();
+                if (keys.Count == 0) return "{}";
+                return "{" + string.Join(sep, keys.Select(k => JsonStringEncode(k) + kvSep + EmitValue(dict[k], sep, kvSep))) + "}";
+            }
+            if (v is SortedDictionary<string, object?> sdict)
+            {
+                var keys = sdict.Keys.OrderBy(k => k, StringComparer.Ordinal).ToList();
+                if (keys.Count == 0) return "{}";
+                return "{" + string.Join(sep, keys.Select(k => JsonStringEncode(k) + kvSep + EmitValue(sdict[k], sep, kvSep))) + "}";
+            }
+            if (v is List<object?> list)
+            {
+                if (list.Count == 0) return "[]";
+                return "[" + string.Join(sep, list.Select(x => EmitValue(x, sep, kvSep))) + "]";
+            }
+            if (v is List<string> strs)
+            {
+                if (strs.Count == 0) return "[]";
+                return "[" + string.Join(sep, strs.Select(x => JsonStringEncode(x))) + "]";
+            }
+            if (v is System.Collections.IEnumerable enumerable)
+            {
+                var items = enumerable.Cast<object?>().ToList();
+                if (items.Count == 0) return "[]";
+                return "[" + string.Join(sep, items.Select(x => EmitValue(x, sep, kvSep))) + "]";
+            }
+            return "null";
+        }
+
+        static string NumFormat(double v)
+        {
+            if (v == 0) return "0";
+            var abs = Math.Abs(v);
+            if (v == Math.Floor(v) && abs < 1e21)
+            {
+                // Integer-valued float: emit as integer (Python's repr(1) = "1")
+                return ((long)v).ToString(System.Globalization.CultureInfo.InvariantCulture);
+            }
+            if (abs < 1e-4 || abs >= 1e17) return SciFormat(v);
+            return v.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        static string SciFormat(double v)
+        {
+            var s = v.ToString("e15", System.Globalization.CultureInfo.InvariantCulture);
+            s = System.Text.RegularExpressions.Regex.Replace(s, @"(\.\d*?)0+e", "$1e");
+            s = s.Replace(".e", "e");
+            var m = System.Text.RegularExpressions.Regex.Match(s, @"^([^e]+)e([+-]?\d+)$");
+            if (m.Success)
+            {
+                var exp = int.Parse(m.Groups[2].Value);
+                var expStr = Math.Abs(exp).ToString("D2");
+                if (exp < 0) return m.Groups[1].Value + "e-" + expStr;
+                return m.Groups[1].Value + "e+" + expStr;
+            }
+            return s;
+        }
+
+        static string JsonStringEncode(string s)
+        {
+            var sb = new StringBuilder("\"");
+            foreach (var c in s)
+            {
+                switch (c)
+                {
+                    case '\\': sb.Append("\\\\"); break;
+                    case '"': sb.Append("\\\""); break;
+                    case '\n': sb.Append("\\n"); break;
+                    case '\r': sb.Append("\\r"); break;
+                    case '\t': sb.Append("\\t"); break;
+                    case '\b': sb.Append("\\b"); break;
+                    case '\f': sb.Append("\\f"); break;
+                    default:
+                        if (c < 0x20) sb.Append($"\\u{(int)c:X4}");
+                        else sb.Append(c);
+                        break;
+                }
+            }
+            sb.Append('"');
+            return sb.ToString();
+        }
+
+        static string EmitJsonElement(JsonElement je, string sep, string kvSep)
+        {
+            switch (je.ValueKind)
+            {
+                case JsonValueKind.Null: return "null";
+                case JsonValueKind.True: return "true";
+                case JsonValueKind.False: return "false";
+                case JsonValueKind.String: return JsonStringEncode(je.GetString() ?? "");
+                case JsonValueKind.Number:
+                    if (je.TryGetInt64(out var ln)) return ln.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                    return NumFormat(je.GetDouble());
+                case JsonValueKind.Array:
+                    var items = je.EnumerateArray().Select(x => EmitJsonElement(x, sep, kvSep)).ToList();
+                    if (items.Count == 0) return "[]";
+                    return "[" + string.Join(sep, items) + "]";
+                case JsonValueKind.Object:
+                    var props = new List<JsonProperty>();
+                    foreach (var p in je.EnumerateObject()) props.Add(p);
+                    props.Sort((a, b) => string.CompareOrdinal(a.Name, b.Name));
+                    if (props.Count == 0) return "{}";
+                    return "{" + string.Join(sep, props.Select(p => JsonStringEncode(p.Name) + kvSep + EmitJsonElement(p.Value, sep, kvSep))) + "}";
+                default: return "null";
+            }
+        }
+
         public static bool IsDescendant(Dictionary<string, Record> applied, string ancestor, string descendant)
         {
             if (ancestor == descendant) return false;
