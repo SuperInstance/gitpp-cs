@@ -4,6 +4,7 @@ using System.Linq;
 using System.Collections.Generic;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading.Tasks;
@@ -125,22 +126,23 @@ class Program
     static string EmitValue(object? v, string sep, string kvSep)
     {
         if (v == null) return "null";
+        if (v is JsonElement je) return EmitJsonElement(je, sep, kvSep);
         if (v is bool b) return b ? "true" : "false";
         if (v is int i) return i.ToString();
         if (v is long l) return l.ToString();
         if (v is double d) return d.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
-        if (v is string str) return JsonSerializer.Serialize(str);
+        if (v is string str) return JsonStringEncode(str);
         if (v is Dictionary<string, object?> dict)
         {
             var keys = dict.Keys.OrderBy(k => k, StringComparer.Ordinal).ToList();
             if (keys.Count == 0) return "{}";
-            return "{" + string.Join(sep, keys.Select(k => JsonSerializer.Serialize(k) + kvSep + EmitValue(dict[k], sep, kvSep))) + "}";
+            return "{" + string.Join(sep, keys.Select(k => JsonStringEncode(k) + kvSep + EmitValue(dict[k], sep, kvSep))) + "}";
         }
         if (v is SortedDictionary<string, object?> sdict)
         {
             var keys = sdict.Keys.OrderBy(k => k, StringComparer.Ordinal).ToList();
             if (keys.Count == 0) return "{}";
-            return "{" + string.Join(sep, keys.Select(k => JsonSerializer.Serialize(k) + kvSep + EmitValue(sdict[k], sep, kvSep))) + "}";
+            return "{" + string.Join(sep, keys.Select(k => JsonStringEncode(k) + kvSep + EmitValue(sdict[k], sep, kvSep))) + "}";
         }
         if (v is List<object?> list)
         {
@@ -155,25 +157,72 @@ class Program
         }
         return JsonSerializer.Serialize(v);
     }
+
+    static string EmitJsonElement(JsonElement je, string sep, string kvSep)
+    {
+        switch (je.ValueKind)
+        {
+            case JsonValueKind.Null:
+                return "null";
+            case JsonValueKind.True:
+                return "true";
+            case JsonValueKind.False:
+                return "false";
+            case JsonValueKind.Number:
+                return je.GetRawText();
+            case JsonValueKind.String:
+                return JsonStringEncode(je.GetString() ?? "");
+            case JsonValueKind.Array:
+                return "[" + string.Join(sep, je.EnumerateArray().Select(x => EmitJsonElement(x, sep, kvSep))) + "]";
+            case JsonValueKind.Object:
+                var props = new List<JsonProperty>();
+                foreach (var p in je.EnumerateObject()) props.Add(p);
+                props.Sort((a, b) => string.CompareOrdinal(a.Name, b.Name));
+                return "{" + string.Join(sep, props.Select(p => JsonStringEncode(p.Name) + kvSep + EmitJsonElement(p.Value, sep, kvSep))) + "}";
+            default:
+                return je.GetRawText();
+        }
+    }
+
+    static string JsonStringEncode(string str)
+    {
+        // JSON string encoding without \\uXXXX escape for non-ASCII (spec §2.5)
+        var sb = new StringBuilder();
+        sb.Append('"');
+        foreach (var c in str)
+        {
+            switch (c)
+            {
+                case '"': sb.Append("\\\""); break;
+                case '\\': sb.Append("\\\\"); break;
+                case '\b': sb.Append("\\b"); break;
+                case '\f': sb.Append("\\f"); break;
+                case '\n': sb.Append("\\n"); break;
+                case '\r': sb.Append("\\r"); break;
+                case '\t': sb.Append("\\t"); break;
+                default:
+                    if (c < 0x20) sb.AppendFormat("\\u{0:x4}", (int)c);
+                    else sb.Append(c);
+                    break;
+            }
+        }
+        sb.Append('"');
+        return sb.ToString();
+    }
 }
 
 class Output
 {
     [JsonPropertyName("state")]
     public Dictionary<string, object?> State { get; set; } = new();
-    
     [JsonPropertyName("order")]
     public List<string> Order { get; set; } = new();
-    
     [JsonPropertyName("conflicts")]
     public List<Dictionary<string, object?>> Conflicts { get; set; } = new();
-    
     [JsonPropertyName("orphans")]
     public List<string> Orphans { get; set; } = new();
-    
     [JsonPropertyName("closure")]
     public List<string> Closure { get; set; } = new();
-    
     [JsonPropertyName("closureRoot")]
     public string? ClosureRoot { get; set; }
 }
