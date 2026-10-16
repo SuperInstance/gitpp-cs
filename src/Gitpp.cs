@@ -333,29 +333,48 @@ namespace Gitpp
         {
             if (v == 0) return "0";
             var abs = Math.Abs(v);
-            if (v == Math.Floor(v) && abs < 1e21)
+            // Integer form requires |v| < 1e16 to fit safely in int64 across
+            // all 5 ports. Larger integer-valued floats fall back to
+            // scientific notation (matching what Python emits in the
+            // cross-port runner, and what C# would emit anyway when the
+            // long cast overflows to long.MinValue).
+            if (v == Math.Floor(v) && abs < 1e16)
             {
-                // Integer-valued float: emit as integer (Python's repr(1) = "1")
                 return ((long)v).ToString(System.Globalization.CultureInfo.InvariantCulture);
             }
-            if (abs < 1e-4 || abs >= 1e17) return SciFormat(v);
+            if (abs < 1e-4 || abs >= 1e16) return SciFormat(v);
             return v.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
         }
 
         static string SciFormat(double v)
         {
-            var s = v.ToString("e15", System.Globalization.CultureInfo.InvariantCulture);
-            s = System.Text.RegularExpressions.Regex.Replace(s, @"(\.\d*?)0+e", "$1e");
-            s = s.Replace(".e", "e");
-            var m = System.Text.RegularExpressions.Regex.Match(s, @"^([^e]+)e([+-]?\d+)$");
-            if (m.Success)
+            // Try 15-digit scientific first, then 16, then 17. The "shortest
+            // round-trip" picks the smallest number of digits that produces
+            // the same double when re-parsed. Matches Python repr() for
+            // float values that don't fit in int64.
+            for (int digits = 15; digits <= 17; digits++)
             {
-                var exp = int.Parse(m.Groups[2].Value);
-                var expStr = Math.Abs(exp).ToString("D2");
-                if (exp < 0) return m.Groups[1].Value + "e-" + expStr;
-                return m.Groups[1].Value + "e+" + expStr;
+                var s = v.ToString("e" + (digits - 1), System.Globalization.CultureInfo.InvariantCulture);
+                s = System.Text.RegularExpressions.Regex.Replace(s, @"(\.\d*?)0+e", "$1e");
+                s = s.Replace(".e", "e");
+                double back = double.Parse(s, System.Globalization.CultureInfo.InvariantCulture);
+                if (back == v)
+                {
+                    var m = System.Text.RegularExpressions.Regex.Match(s, @"^([^e]+)e([+-]?\d+)$");
+                    if (m.Success)
+                    {
+                        var exp = int.Parse(m.Groups[2].Value);
+                        var expStr = Math.Abs(exp).ToString("D2");
+                        if (exp < 0) return m.Groups[1].Value + "e-" + expStr;
+                        return m.Groups[1].Value + "e+" + expStr;
+                    }
+                    return s;
+                }
             }
-            return s;
+            // 17 digits also didn't round-trip (shouldn't happen for IEEE-754 double).
+            // Fall back to "R" format which always round-trips.
+            var fallback = v.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
+            return fallback;
         }
 
         static string JsonStringEncode(string s)
