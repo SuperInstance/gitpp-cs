@@ -33,6 +33,62 @@ namespace Gitpp
     /// <summary>
     /// The fold: derive state, conflicts, order, orphans from a record set.
     /// </summary>
+    /// <summary>
+    /// Put every JSON number in the float64 domain, per spec SS2/SS3.
+    ///
+    /// System.Text.Json does not do this on its own: a bare integer literal
+    /// arrives as an int64, so {"x": 1000000000000000000} was emitted as integer
+    /// digits while js/c/perl/python all decoded it as a float64 and emitted
+    /// 1e+18 (abs(v) >= 1e16 is scientific per SS3). Same class of defect as
+    /// python's json module (arbitrary-precision int) and JSON::PP (string).
+    /// Three of five ports shipped it; the host decoder quietly choosing a
+    /// different numeric type is the entire problem, so the fix belongs at the
+    /// decode boundary and never in the encoder. (gitpp-cs v0.3.3)
+    /// </summary>
+    public static class Numbers
+    {
+        public static object? Normalize(object? v)
+        {
+            switch (v)
+            {
+                case null: return null;
+                case long l: return (double)l;
+                case int i: return (double)i;
+                case short sh: return (double)sh;
+                case float f: return (double)f;
+                case decimal m: return (double)m;
+                case JsonElement je:
+                    if (je.ValueKind == JsonValueKind.Number) return je.GetDouble();
+                    if (je.ValueKind == JsonValueKind.Array)
+                        return je.EnumerateArray().Select(x => Numbers.Normalize(x)).ToList();
+                    if (je.ValueKind == JsonValueKind.Object)
+                        return je.EnumerateObject().ToDictionary(
+                            p => p.Name, p => Numbers.Normalize(p.Value), StringComparer.Ordinal);
+                    return JsonSerializer.Deserialize<object?>(je);
+                case System.Collections.IEnumerable list when list is not string:
+                    return list.Cast<object?>().Select(x => Numbers.Normalize(x)).ToList();
+                default: return v;
+            }
+        }
+
+        public static Record Normalize(Record r)
+        {
+            var e = new Dictionary<string, object?>(r.Effects.Count, StringComparer.Ordinal);
+            foreach (var kv in r.Effects) e[kv.Key] = Normalize(kv.Value);
+            return r with { Effects = e };
+        }
+
+        /// <summary>
+        /// Deserialize a record set with every number in the float64 domain.
+        /// Prefer this over JsonSerializer.Deserialize&lt;Record[]&gt; directly.
+        /// </summary>
+        public static Record[] ParseRecords(string json)
+        {
+            var raw = JsonSerializer.Deserialize<Record[]>(json) ?? Array.Empty<Record>();
+            return raw.Select(r => Normalize(r)).ToArray();
+        }
+    }
+
     public static class Fold
     {
         public record DerivedResult
