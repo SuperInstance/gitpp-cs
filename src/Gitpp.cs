@@ -202,6 +202,27 @@ namespace Gitpp
                 }
             }
 
+            // Per spec §5.3: a conflict is emitted only when 2+ DISTINCT values
+            // exist for k across ALL candidates, and `losers` is every candidate
+            // that set k with a value OTHER THAN the winner's. The streaming
+            // model above records a loser the moment one outranks another, which
+            // over-reports when two records agree. Reconcile here.
+            // (gitpp-cs v0.3.2)
+            foreach (var k in conflictData.Keys.ToList())
+            {
+                var (w, l) = conflictData[k];
+                var cands = applied.Values.Where(r => r.Effects.ContainsKey(k)).ToList();
+                var distinct = cands.Select(r => JsonSerializer.Serialize(r.Effects[k]))
+                                    .Distinct(StringComparer.Ordinal).Count();
+                if (distinct < 2) { conflictData.Remove(k); continue; }
+                if (!applied.TryGetValue(w, out var wr)) { conflictData.Remove(k); continue; }
+                var wv = JsonSerializer.Serialize(wr.Effects[k]);
+                var kept = l.Where(x => applied.ContainsKey(x)
+                              && JsonSerializer.Serialize(applied[x].Effects[k]) != wv).ToList();
+                if (kept.Count == 0) { conflictData.Remove(k); continue; }
+                conflictData[k] = (w, kept);
+            }
+
             var conflicts = new List<Dictionary<string, object?>>();
             foreach (var (k, (winner, losers)) in conflictData)
             {
