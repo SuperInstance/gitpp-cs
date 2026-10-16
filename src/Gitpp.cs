@@ -104,6 +104,15 @@ namespace Gitpp
 
             [JsonPropertyName("orphans")]
             public List<string> Orphans { get; init; } = new();
+
+            /// <summary>
+            /// Spec §5.6: which record sets each key. The streaming fold already
+            /// tracked this in <c>setters</c> and discarded it, which left a
+            /// same-class nudge parented on the wrong record landing or vanishing
+            /// depending only on whether its own id sorted before the winner's.
+            /// </summary>
+            [JsonPropertyName("setters")]
+            public Dictionary<string, string> Setters { get; init; } = new();
         }
 
         public static DerivedResult Derive(IEnumerable<Record> recordsList)
@@ -293,6 +302,7 @@ namespace Gitpp
             return new DerivedResult
             {
                 State = state,
+                Setters = setters,
                 Order = order,
                 Conflicts = conflicts,
                 Orphans = allOrphans.ToList(),
