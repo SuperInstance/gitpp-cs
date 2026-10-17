@@ -14,6 +14,14 @@ class Program
 {
     static async Task Main(string[] args)
     {
+        // Spec \u00a75.5 orphan regression battery. No test framework in this
+        // project (the runner is a console app), so it is a flag and an exit code.
+        if (args.Length == 1 && args[0] == "--cycle-orphans")
+        {
+            Environment.Exit(CycleOrphansTests.Run());
+            return;
+        }
+
         string json;
         if (args.Length > 0 && args[0] != "-")
         {

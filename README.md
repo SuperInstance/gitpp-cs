@@ -7,6 +7,7 @@
 - `src/Gitpp.cs` — the `Record` class and the `Fold.Derive(records)` function. Stdlib only (System.Text.Json, System.Security.Cryptography, System.Linq, System.Collections.Generic).
 - `test/Test.csproj` — a console runner that reads a JSON record set from a file (or stdin), takes `--at <record>`, and prints `{ state, order, conflicts, orphans, closure, closureRoot }` as JSON to stdout.
 - `test/Program.cs` — the runner.
+- `test/CycleOrphansTests.cs` — the spec §5.5 orphan regression battery (13 discriminating cases + the §5.5 counterexample).
 
 ## Build & run
 
@@ -20,6 +21,10 @@ HOME=/tmp/fake-home dotnet run --project test -- records.json --at task-c
 
 # Or use the binary directly
 ./test/bin/Release/net9.0/Test records.json --at task-c
+
+# Spec §5.5 cycle-orphan regression (no test framework in this project, so it
+# is a flag and an exit code: 0 = pass, 1 = fail)
+./test/bin/Release/net9.0/Test --cycle-orphans
 ```
 
 Output is JSON:
@@ -67,6 +72,7 @@ These changes were confirmed against the 4 cross-port cases: all match byte-for-
 ## Known limitations
 
 - A few non-load-bearing edge cases in the conformance corpus: the V1 cases that need input_modification DSL support are not exercised here. (28 of 28 pass; 2 are skipped because they rely on the runner's input_modification handling, which the C# runner does not implement.)
+- `L1/signed-zero` currently FAILS when run through the `gitpp-conformance` corpus: the runner emits `0.0` for an effect the spec §3 canonicalises to `0`. This is a number-encoding gap in the output path, unrelated to fold resolution and unrelated to the §5.5 orphan rule; it predates the `fix/cycle-descendant-orphans` branch and is left alone there deliberately. Measured with a harness that also checks `expected_order` and `expected_orphans_includes` (which the official JS runner ignores): 27 pass / 1 fail, before and after the orphan fix.
 - The runner is a console app, not a library; for embedding in a larger .NET project, copy the `Fold` class.
 
 ## License
