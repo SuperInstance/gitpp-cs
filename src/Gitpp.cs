@@ -289,13 +289,36 @@ namespace Gitpp
             }
 
             var conflicts = new List<Dictionary<string, object?>>();
+            // SPEC 5.2 (v0.4.6): the losers are listed in the 5.4 order
+            // sequence -- the same order the 'order' field uses, filtered
+            // to the losers.
+            //
+            // Previously they were appended in DISCOVERY order, the order
+            // in which the streaming fold displaced them. The old text
+            // fixed the MEMBERSHIP of the loser set ("every record that
+            // tried to set K with a value other than the winner's") and
+            // said "N-1 losers" -- set language -- without ever saying
+            // what order the set is written in.
+            //
+            // Minimal witness: m(override,x=2), z(witness,x=3),
+            // a(override,x=1,parents:[z]) -> order [m,z,a], winner m,
+            // losers z and a. Order sequence gives [z,a]; codepoint gives
+            // [a,z]. Both satisfy "N-1 losers".
+            //
+            // The ledger is a RECEIPT: a consumer that hashes it or diffs
+            // two ledgers must not get different bytes for the same fold.
+            var orderIndex = new Dictionary<string, int>();
+            for (int i = 0; i < order.Count; i++) orderIndex[order[i]] = i;
             foreach (var (k, (winner, losers)) in conflictData)
             {
+                var ordered = losers
+                    .OrderBy(l => orderIndex.TryGetValue(l, out var oi) ? oi : int.MaxValue)
+                    .ToList();
                 conflicts.Add(new Dictionary<string, object?>
                 {
                     ["key"] = k,
                     ["winner"] = winner,
-                    ["losers"] = losers,
+                    ["losers"] = ordered,
                 });
             }
 
