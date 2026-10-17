@@ -201,6 +201,18 @@ namespace Gitpp
             var state = new Dictionary<string, object?>();
             var setters = new Dictionary<string, string>();
             var precedence = new Dictionary<string, int> { { "override", 3 }, { "task", 2 }, { "witness", 1 } };
+
+            // Spec 5.1 (v0.4.6): a record whose kind is null or unrecognised has no
+            // class and ranks lowest -- below witness. It still wins an uncontested
+            // key, and two such records are a single class, so 5.2's equal-class
+            // tie-break (ancestry, then topo order) applies between them.
+            //
+            // This must be a null CHECK, not a defaulted lookup:
+            // Dictionary<string,int>.GetValueOrDefault(null, 0) THROWS
+            // ArgumentNullException rather than returning the default, because a
+            // Dictionary rejects a null key outright -- including through the
+            // CollectionExtensions overload that is meant to be null-tolerant.
+            int Rank(string kind) => kind is null ? 0 : precedence.GetValueOrDefault(kind, 0);
             var conflictData = new Dictionary<string, (string winner, List<string> losers)>();
 
             foreach (var rid in order)
@@ -212,7 +224,7 @@ namespace Gitpp
                     {
                         var existingKind = applied[setters[k]].Kind;
                         var newKind = r.Kind;
-                        if (precedence.GetValueOrDefault(newKind, 0) > precedence.GetValueOrDefault(existingKind, 0))
+                        if (Rank(newKind) > Rank(existingKind))
                         {
                             // New wins (higher precedence)
                             if (!conflictData.ContainsKey(k))
@@ -225,7 +237,7 @@ namespace Gitpp
                             state[k] = v;
                             setters[k] = rid;
                         }
-                        else if (precedence.GetValueOrDefault(newKind, 0) == precedence.GetValueOrDefault(existingKind, 0))
+                        else if (Rank(newKind) == Rank(existingKind))
                         {
                             // Same precedence: descendant wins
                             var existingSetter = setters[k];
