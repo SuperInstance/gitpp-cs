@@ -59,12 +59,12 @@ static class NullKindRegression
                 bool ok = got.Count == c.expected.Count
                     && c.expected.All(kv => got.TryGetValue(kv.Key, out var v)
                         && JsonSerializer.Serialize(v) == JsonSerializer.Serialize(kv.Value));
-                Console.WriteLine($"  {(ok ? "PASS" : "FAIL")}  v0.4.6: {c.name}");
+                Console.Error.WriteLine($"  {(ok ? "PASS" : "FAIL")}  v0.4.6: {c.name}");
                 if (!ok) fails++;
             }
             catch (Exception e)
             {
-                Console.WriteLine($"  FAIL  v0.4.6: {c.name}  THREW {e.GetType().Name}: {e.Message}");
+                Console.Error.WriteLine($"  FAIL  v0.4.6: {c.name}  THREW {e.GetType().Name}: {e.Message}");
                 fails++;
             }
         }

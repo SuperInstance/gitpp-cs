@@ -1,0 +1,61 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      DOTNET_CLI_HOME: /tmp/dnhome
+      NUGET_PACKAGES: /tmp/nugetpkgs
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: '9.0.x' }
+      - name: build
+        run: dotnet build test/Test.csproj -c Release -o out
+      - name: the CLI's stdout must be machine-parseable
+        # This port's CLI used to print its regression output to STDOUT,
+        # AFTER the JSON. Every programmatic consumer then died with
+        #
+        #   Unexpected non-whitespace character after JSON at position 299
+        #
+        # The regression is a real check and must keep running -- but it
+        # belongs on stderr. This step pins that arrangement: stdout is
+        # parsed as JSON, and the regression output is NOT in it.
+        run: |
+          cat > /tmp/one.json <<'JSON'
+          [{"id":"a","kind":"task","parents":[],"effects":{"x":1},"reason":null}]
+          JSON
+          dotnet out/Test.dll /tmp/one.json --at a > /tmp/stdout.txt 2> /tmp/stderr.txt
+          echo "  stdout: $(wc -c < /tmp/stdout.txt) bytes, stderr: $(wc -c < /tmp/stderr.txt) bytes"
+          # stdout must be exactly one JSON document and nothing else.
+          python3 - <<'PY'
+          import json, sys
+          raw = open('/tmp/stdout.txt').read()
+          try:
+              d = json.loads(raw)
+          except Exception as e:
+              print(f"  FAIL stdout is not parseable JSON: {e}")
+              print("  ---- stdout ----"); print(raw[:400])
+              sys.exit(1)
+          if "closureRoot" not in d:
+              print("  FAIL stdout has no closureRoot")
+              sys.exit(1)
+          print("  ok   stdout is exactly one JSON document with a closureRoot")
+          PY
+          # And the regression must STILL be running -- on stderr.
+          if ! grep -q "PASS\|FAIL" /tmp/stderr.txt; then
+            echo "  FAIL the regression did not run"
+            exit 1
+          fi
+          echo "  ok   the regression still runs (on stderr)"
+      - name: the regression must pass
+        run: |
+          dotnet out/Test.dll /tmp/one.json --at a 2>&1 >/dev/null | grep -q "FAIL" \
+            && { echo "  a regression case FAILED"; exit 1; } || echo "  all regression cases pass"
