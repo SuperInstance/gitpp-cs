@@ -120,51 +120,81 @@ namespace Gitpp
             var records = recordsList.Where(r => !string.IsNullOrEmpty(r.Id)).ToList();
             var byId = records.ToDictionary(r => r.Id);
 
-            // Find orphans
-            var orphans = new HashSet<string>();
-            foreach (var r in records)
+            // Spec §5.5 — "cycle-affected records are orphans for output purposes".
+            //
+            // This needs THREE clauses, not one. The two obvious single-clause rules
+            // each get a different case wrong:
+            //
+            //   rule A: a parent id is missing from the record set. Correct for a
+            //           missing-parent record, but blind to cycles — a cycle
+            //           member's parents all exist, so records downstream of the
+            //           cycle sail through and reach state.
+            //   rule B: anything Kahn never emitted. Correct for cycles, but it also
+            //           swallows the descendants of a MISSING parent, which are
+            //           perfectly orderable. (That trade-off is gitpp-rr-reader3#1.)
+            //
+            // Clause 3 is what separates the two cases no single rule can: a cycle
+            // DESCENDANT's parent exists but is unorderable, while a
+            // missing-parent DESCENDANT's parent does not exist at all.
+            //
+            // `orderable` is Kahn over the FULL record set with in-degree counting
+            // only parents THAT EXIST. An absent parent cannot block a record —
+            // there is nothing to wait for — which is exactly why a missing-parent
+            // record and its descendants stay orderable and must NOT be orphaned.
+            var orderable = new HashSet<string>();
+            var oInDeg = byId.ToDictionary(kv => kv.Key, _ => 0);
+            var oEdges = byId.ToDictionary(kv => kv.Key, _ => new List<string>());
+            foreach (var (rid, r) in byId)
             {
                 foreach (var p in r.Parents)
                 {
-                    if (!byId.ContainsKey(p))
+                    if (byId.ContainsKey(p))
                     {
-                        orphans.Add(r.Id);
-                        break;
+                        oEdges[p].Add(rid);
+                        oInDeg[rid]++;
                     }
                 }
             }
-
-            // Detect cycles
-            var color = records.ToDictionary(r => r.Id, _ => 0);
-            var cycle = new HashSet<string>();
-            void Dfs(string rid, List<string> path)
+            var oQueue = new SortedSet<string>(
+                oInDeg.Where(kv => kv.Value == 0).Select(kv => kv.Key), StringComparer.Ordinal);
+            while (oQueue.Count > 0)
             {
-                var c = color[rid];
-                if (c == 1)
+                var rid = oQueue.Min!;
+                oQueue.Remove(rid);
+                orderable.Add(rid);
+                foreach (var child in oEdges[rid].OrderBy(x => x, StringComparer.Ordinal))
                 {
-                    int idx = path.IndexOf(rid);
-                    foreach (var x in path.GetRange(idx, path.Count - idx))
-                        cycle.Add(x);
-                    return;
+                    if (--oInDeg[child] == 0)
+                        oQueue.Add(child);
                 }
-                if (c == 2) return;
-                color[rid] = 1;
-                path.Add(rid);
-                foreach (var p in byId[rid].Parents)
-                {
-                    if (byId.ContainsKey(p))
-                        Dfs(p, path);
-                }
-                path.RemoveAt(path.Count - 1);
-                color[rid] = 2;
-            }
-            foreach (var rid in byId.Keys.ToList())
-            {
-                if (color[rid] == 0)
-                    Dfs(rid, new List<string>());
             }
 
-            var allOrphans = orphans.Union(cycle).ToHashSet();
+            var allOrphans = new HashSet<string>();
+            foreach (var (rid, r) in byId)
+            {
+                var ps = r.Parents;
+                // 1. missing parent
+                if (ps.Any(p => !byId.ContainsKey(p)))
+                {
+                    allOrphans.Add(rid);
+                    continue;
+                }
+                // 2. cycle member — can never be topologically ordered. This subsumes
+                // the old DFS cycle scan: a node on a cycle always has an in-edge from
+                // another cycle member, so Kahn can never emit it.
+                if (!orderable.Contains(rid))
+                {
+                    allOrphans.Add(rid);
+                    continue;
+                }
+                // 3. cycle descendant — an existing parent that is itself unorderable.
+                // The byId.ContainsKey(p) guard is the whole point: it keeps clause 1
+                // (parent absent) and clause 3 (parent present but stuck) apart.
+                if (ps.Any(p => byId.ContainsKey(p) && !orderable.Contains(p)))
+                {
+                    allOrphans.Add(rid);
+                }
+            }
             var applied = byId.Where(kv => !allOrphans.Contains(kv.Key)).ToDictionary(kv => kv.Key, kv => kv.Value);
 
             // Topo sort, smallest-id-first
