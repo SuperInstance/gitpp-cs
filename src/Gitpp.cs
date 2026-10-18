@@ -231,6 +231,18 @@ namespace Gitpp
             var state = new Dictionary<string, object?>();
             var setters = new Dictionary<string, string>();
             var precedence = new Dictionary<string, int> { { "override", 3 }, { "task", 2 }, { "witness", 1 } };
+
+            // Spec 5.1 (v0.4.6): a record whose kind is null or unrecognised has no
+            // class and ranks lowest -- below witness. It still wins an uncontested
+            // key, and two such records are a single class, so 5.2's equal-class
+            // tie-break (ancestry, then topo order) applies between them.
+            //
+            // This must be a null CHECK, not a defaulted lookup:
+            // Dictionary<string,int>.GetValueOrDefault(null, 0) THROWS
+            // ArgumentNullException rather than returning the default, because a
+            // Dictionary rejects a null key outright -- including through the
+            // CollectionExtensions overload that is meant to be null-tolerant.
+            int Rank(string kind) => kind is null ? 0 : precedence.GetValueOrDefault(kind, 0);
             var conflictData = new Dictionary<string, (string winner, List<string> losers)>();
 
             foreach (var rid in order)
@@ -242,7 +254,7 @@ namespace Gitpp
                     {
                         var existingKind = applied[setters[k]].Kind;
                         var newKind = r.Kind;
-                        if (precedence.GetValueOrDefault(newKind, 0) > precedence.GetValueOrDefault(existingKind, 0))
+                        if (Rank(newKind) > Rank(existingKind))
                         {
                             // New wins (higher precedence)
                             if (!conflictData.ContainsKey(k))
@@ -255,7 +267,7 @@ namespace Gitpp
                             state[k] = v;
                             setters[k] = rid;
                         }
-                        else if (precedence.GetValueOrDefault(newKind, 0) == precedence.GetValueOrDefault(existingKind, 0))
+                        else if (Rank(newKind) == Rank(existingKind))
                         {
                             // Same precedence: descendant wins
                             var existingSetter = setters[k];
@@ -319,13 +331,36 @@ namespace Gitpp
             }
 
             var conflicts = new List<Dictionary<string, object?>>();
+            // SPEC 5.2 (v0.4.6): the losers are listed in the 5.4 order
+            // sequence -- the same order the 'order' field uses, filtered
+            // to the losers.
+            //
+            // Previously they were appended in DISCOVERY order, the order
+            // in which the streaming fold displaced them. The old text
+            // fixed the MEMBERSHIP of the loser set ("every record that
+            // tried to set K with a value other than the winner's") and
+            // said "N-1 losers" -- set language -- without ever saying
+            // what order the set is written in.
+            //
+            // Minimal witness: m(override,x=2), z(witness,x=3),
+            // a(override,x=1,parents:[z]) -> order [m,z,a], winner m,
+            // losers z and a. Order sequence gives [z,a]; codepoint gives
+            // [a,z]. Both satisfy "N-1 losers".
+            //
+            // The ledger is a RECEIPT: a consumer that hashes it or diffs
+            // two ledgers must not get different bytes for the same fold.
+            var orderIndex = new Dictionary<string, int>();
+            for (int i = 0; i < order.Count; i++) orderIndex[order[i]] = i;
             foreach (var (k, (winner, losers)) in conflictData)
             {
+                var ordered = losers
+                    .OrderBy(l => orderIndex.TryGetValue(l, out var oi) ? oi : int.MaxValue)
+                    .ToList();
                 conflicts.Add(new Dictionary<string, object?>
                 {
                     ["key"] = k,
                     ["winner"] = winner,
-                    ["losers"] = losers,
+                    ["losers"] = ordered,
                 });
             }
 

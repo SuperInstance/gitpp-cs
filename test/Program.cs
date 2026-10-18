@@ -73,6 +73,10 @@ class Program
                 WriteIndented = true,
             }));
         }
+
+        int regFails = NullKindRegression.Run();
+        if (regFails > 0)
+            throw new Exception($"{regFails} v0.4.6 null-kind regression(s) failed");
     }
 }
 
